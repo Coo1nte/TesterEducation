@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+pydantic
+passlib[bcrypt]
+email-validator
+bcrypt==4.0.1
+requests
+psycopg2-binary
+PyJWT
