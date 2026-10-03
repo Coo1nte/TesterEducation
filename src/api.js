@@ -27,8 +27,8 @@ function extractError(errData, fallback) {
 
 
 // Получить все тесты пользователя
-export async function fetchTests(owner) {
-    const res = await fetch(`${API_URL}/tests?owner=${encodeURIComponent(owner)}`, { headers: authHeaders() });
+export async function fetchTests() {
+    const res = await fetch(`${API_URL}/tests`, { headers: authHeaders() });
     if (!res.ok) throw new Error("Не удалось загрузить тесты");
     return res.json();
 }
@@ -46,7 +46,6 @@ export async function createTest(test) {
         method: "POST",
         headers: authHeaders(),
         body: JSON.stringify({
-            owner: test.owner,
             title: test.title,
             type: test.type,
             questions: test.questions,
@@ -73,7 +72,6 @@ export async function updateTest(testId, test) {
         method: "PUT",
         headers: authHeaders(),
         body: JSON.stringify({
-            owner: test.owner,
             title: test.title,
             type: test.type,
             questions: test.questions,

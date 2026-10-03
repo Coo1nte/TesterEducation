@@ -1,50 +1,24 @@
-from pydantic import BaseModel, EmailStr, field_validator
-from typing import Any, List
+from pydantic import BaseModel, EmailStr, field_validator, Field
+from typing import Any, Dict, List, Literal
 import re
 
-
 class SubmissionCreate(BaseModel):
-    name: str
+    name: str = Field(min_length=1, max_length=100)
     score: int = 0
     total: int = 0
     answered: int = 0
     skipped: int = 0
-    detailed: Any = []
+    detailed: List[Dict[str, Any]] = Field(default_factory=list)
     at: str
 
-
-class SubmissionOut(SubmissionCreate):
-    id: int
-
-    class Config:
-        from_attributes = True
-
-
 class TestCreate(BaseModel):
-    owner: str
-    title: str
-    type: str
-    questions: Any
+    title: str = Field(min_length=1, max_length=200)
+    type: Literal["quiz", "survey", "analytics"]
+    questions: List[Dict[str, Any]] = Field(default_factory=list)
     time_limit: int = 0
     shuffle_questions: bool = False
     folder: str = ""
     random_count: int = 0
-
-
-class TestOut(BaseModel):
-    id: int
-    owner: str
-    title: str
-    type: str
-    questions: Any
-    shareCode: str
-    timeLimit: int = 0
-    shuffleQuestions: bool = False
-    folder: str = ""
-    submissions: List[SubmissionOut] = []
-
-    class Config:
-        from_attributes = True
 
 
 # ---------- Авторизация ----------
@@ -74,7 +48,7 @@ class RegisterStart(BaseModel):
 
 
 class CodeConfirm(BaseModel):
-    email: str
+    email: EmailStr
     code: str
 
 
@@ -84,13 +58,19 @@ class LoginInput(BaseModel):
 
 
 class ResetStart(BaseModel):
-    email: str
+    email: EmailStr
 
 
 class ResetConfirm(BaseModel):
-    email: str
+    email: EmailStr
     code: str
     new_password: str
+    @field_validator('new_password')
+    @classmethod
+    def validate_password(cls, v: str) -> str:
+        if len(v) < 6:
+            raise ValueError('Пароль минимум 6 символов')
+        return v
 
 
 class AuthOut(BaseModel):

@@ -1,27 +1,36 @@
+import os
 import secrets
-from datetime import datetime
+import random
+import logging
+from datetime import datetime, timezone, timedelta
+import models
+import schemas
+from dotenv import load_dotenv
+load_dotenv()
+
 from fastapi import FastAPI, Depends, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-import random
-
-import models
-import schemas
+from sqlalchemy import text
 from database import engine, get_db, DATABASE_URL
-from auth import (
-    hash_password, verify_password, generate_code,
-    generate_token, verify_token, code_expiry,
-)
+from auth import hash_password, verify_password, generate_code, generate_token, verify_token, code_expiry
 from mailer import send_code_email
 
-_db_type = "postgresql" if "postgresql" in DATABASE_URL or "postgres" in DATABASE_URL else "sqlite"
-print(f"[STARTUP] Database type: {_db_type}")
-print(f"[STARTUP] DATABASE_URL set: {bool(DATABASE_URL and 'neon' in DATABASE_URL)}")
+logger = logging.getLogger("tests")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
+_db_type = "postgresql" if "postgresql" in DATABASE_URL or "postgres" in DATABASE_URL else "sqlite"
+# print(f"[STARTUP] Database type: {_db_type}")
+# print(f"[STARTUP] DATABASE_URL set: {bool(DATABASE_URL and 'neon' in DATABASE_URL)}")
+logger.info(f"Database type: {_db_type}")
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Tests API")
 
+def _aware(dt: datetime) -> datetime:
+    if dt is None:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 def get_current_user(authorization: str = Header(None), db: Session = Depends(get_db)):
     if not authorization or not authorization.startswith("Bearer "):
@@ -34,10 +43,12 @@ def get_current_user(authorization: str = Header(None), db: Session = Depends(ge
         raise HTTPException(status_code=401, detail="Пользователь не найден")
     return user
 
+_cors_env = os.environ.get("CORS_ORIGINS", "").strip()
+_origins = [o.strip() for o in _cors_env.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_origins or ["*"],
+    allow_credentials=bool(_origins),   # credentials только при явных доменах
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -46,14 +57,21 @@ def pick_questions(test: models.Test) -> list:
     """Возвращает список вопросов для прохождения.
     Если random_count > 0 — случайная выборка такого размера,
     иначе — все вопросы (при shuffle_questions — перемешанные)."""
-    questions = list(test.questions or [])
+    raw = test.questions
+    questions = list(raw) if isinstance(raw, list) else []
     n = test.random_count or 0
 
-    if n and n < len(questions):
-        questions = random.sample(questions, n)
-    elif test.shuffle_questions:
-        random.shuffle(questions)
+    if n >= len(questions):
+        # берём все — но при shuffle_questions всё равно перемешаем
+        if test.shuffle_questions:
+            random.shuffle(questions)
+        return questions
 
+    if n > 0:
+        return random.sample(questions, n)
+
+    if test.shuffle_questions:
+        random.shuffle(questions)
     return questions
 
 def _to_out(test: models.Test) -> dict:
@@ -92,23 +110,20 @@ def root():
 @app.get("/db-check")
 def db_check(db: Session = Depends(get_db)):
     try:
-        result = db.execute(models.sa_text("SELECT 1")).fetchone()
+        result = db.execute(text("SELECT 1")).fetchone()
         user_count = db.query(models.User).count()
         test_count = db.query(models.Test).count()
-        return {
-            "db_type": _db_type,
-            "neon_connected": "neon" in DATABASE_URL,
-            "connection": "ok" if result else "fail",
-            "users": user_count,
-            "tests": test_count,
-        }
-    except Exception as e:
-        return {"db_type": _db_type, "error": str(e)}
-
+        return {"connection": "ok"}
+    except Exception:
+        logger.exception("db-check failed")
+        return {"db_type": _db_type, "connection": "fail"}
 
 @app.get("/tests")
-def get_tests(owner: str, db: Session = Depends(get_db)):
-    tests = db.query(models.Test).filter(models.Test.owner == owner).all()
+def get_tests(
+    user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    tests = db.query(models.Test).filter(models.Test.owner == user.login).all()
     return [_to_out(t) for t in tests]
 
 
@@ -120,14 +135,19 @@ def get_test_by_code(code: str, db: Session = Depends(get_db)):
 
     result = _to_out(test)
     result["questions"] = pick_questions(test)   # ← подменяем на выборку
+    result["submissions"] = []    # гостю не показываем результаты других
     return result
 
 
 @app.post("/tests")
-def create_test(data: schemas.TestCreate, db: Session = Depends(get_db)):
-    code = secrets.token_hex(3).upper()
+def create_test(
+    data: schemas.TestCreate,
+    user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    code = secrets.token_hex(5).upper()
     test = models.Test(
-        owner=data.owner,
+        owner=user.login,
         title=data.title,
         type=data.type,
         questions=data.questions,
@@ -144,8 +164,11 @@ def create_test(data: schemas.TestCreate, db: Session = Depends(get_db)):
 
 
 @app.delete("/tests/{test_id}")
-def delete_test(test_id: int, db: Session = Depends(get_db)):
-    test = db.query(models.Test).filter(models.Test.id == test_id).first()
+def delete_test(test_id: int, user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    test = db.query(models.Test).filter(
+        models.Test.id == test_id,
+        models.Test.owner == user.login,
+    ).first()
     if not test:
         raise HTTPException(status_code=404, detail="Тест не найден")
     db.delete(test)
@@ -154,11 +177,18 @@ def delete_test(test_id: int, db: Session = Depends(get_db)):
 
 
 @app.put("/tests/{test_id}")
-def update_test(test_id: int, data: schemas.TestCreate, db: Session = Depends(get_db)):
-    test = db.query(models.Test).filter(models.Test.id == test_id).first()
+def update_test(
+    test_id: int,
+    data: schemas.TestCreate,
+    user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    test = db.query(models.Test).filter(
+        models.Test.id == test_id,
+        models.Test.owner == user.login,
+    ).first()
     if not test:
         raise HTTPException(status_code=404, detail="Тест не найден")
-
     test.title = data.title
     test.type = data.type
     test.questions = data.questions
@@ -181,25 +211,84 @@ def add_submission(
     if not test:
         raise HTTPException(status_code=404, detail="Тест не найден")
 
+    # набор вопросов, которые реально были у клиента
+    by_qid = {d.get("qid"): d for d in (data.detailed or [])}
+    bank = {q["id"]: q for q in (test.questions or []) if isinstance(q, dict) and "id" in q}
+    served = [bank[qid] for qid in by_qid.keys() if qid in bank]
+
+    total = len(served)
+    score = 0
+    answered = 0
+
+    if test.type == "quiz":
+        for q in served:
+            d = by_qid.get(q["id"]) or {}
+            fmt = q.get("format")
+
+            if fmt == "text":
+                has = bool((d.get("text") or "").strip())
+                ok = (d.get("text") or "").strip().lower() == (q.get("correctText") or "").strip().lower()
+            elif fmt == "match":
+                has = bool(d.get("matches"))
+                pairs = q.get("pairs") or []
+                ok = len(pairs) > 0 and all((d.get("matches") or {}).get(str(p["id"])) == p["id"] for p in pairs)
+            elif fmt == "order":
+                has = bool(d.get("orderItems"))
+                correct = [i["id"] for i in (q.get("orderItems") or [])]
+                user_ids = [i["id"] for i in (d.get("orderItems") or [])]
+                ok = correct == user_ids
+            else:  # single / multiple
+                has = bool(d.get("selected"))
+                correct = sorted(o["id"] for o in (q.get("options") or []) if o.get("correct"))
+                sel = sorted(d.get("selected") or [])
+                ok = correct == sel
+
+            if has:
+                answered += 1
+            if ok:
+                score += 1
+    else:
+        # для survey/analytics просто считаем отвеченные
+        for q in served:
+            d = by_qid.get(q["id"]) or {}
+            fmt = q.get("format")
+            if fmt in ("text", "match", "order"):
+                has = bool(d.get(fmt if fmt != "match" else "matches") or d.get("orderItems") or d.get("text"))
+            else:
+                has = bool(d.get("selected"))
+            if has:
+                answered += 1
+
     sub = models.Submission(
         test_id=test_id,
-        name=data.name,
-        score=data.score,
-        total=data.total,
-        answered=data.answered,
-        skipped=data.skipped,
+        name=(data.name or "")[:100],
+        score=score,
+        total=total,
+        answered=answered,
+        skipped=total - answered,
         detailed=data.detailed,
         at=data.at,
     )
+
     db.add(sub)
     db.commit()
     db.refresh(test)
-    return _to_out(test)
+    result = _to_out(test)
+    result["submissions"] = []   # не раскрываем чужие ответы гостю
+    return result
 
 
 @app.delete("/tests/{test_id}/submissions/{sub_id}")
-def delete_submission(test_id: int, sub_id: int, db: Session = Depends(get_db)):
-    test = db.query(models.Test).filter(models.Test.id == test_id).first()
+def delete_submission(
+    test_id: int,
+    sub_id: int,
+    user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    test = db.query(models.Test).filter(
+        models.Test.id == test_id,
+        models.Test.owner == user.login,
+    ).first()
     if not test:
         raise HTTPException(status_code=404, detail="Тест не найден")
 
@@ -225,6 +314,14 @@ def register_start(data: schemas.RegisterStart, db: Session = Depends(get_db)):
     email = data.email.strip().lower()
     login = data.login.strip()
 
+    recent = db.query(models.EmailCode).filter(
+        models.EmailCode.email == email,
+        models.EmailCode.purpose == "register",
+        models.EmailCode.created_at > datetime.now(timezone.utc) - timedelta(minutes=3),
+    ).first()
+    if recent:
+        raise HTTPException(status_code=429, detail="Слишком часто. Подождите 3 минуты.")
+
     # Проверяем email и логин раздельно, чтобы не пропустить оба конфликта
     email_user = db.query(models.User).filter(models.User.email == email).first()
     login_user = db.query(models.User).filter(models.User.login == login).first()
@@ -239,7 +336,11 @@ def register_start(data: schemas.RegisterStart, db: Session = Depends(get_db)):
         db.delete(email_user)
     if login_user and login_user is not email_user:
         db.delete(login_user)
-    db.commit()
+
+    db.query(models.EmailCode).filter(
+        models.EmailCode.email == email,
+        models.EmailCode.purpose == "register",
+    ).delete(synchronize_session=False)
 
     user = models.User(
         email=email,
@@ -255,7 +356,16 @@ def register_start(data: schemas.RegisterStart, db: Session = Depends(get_db)):
     ))
     db.commit()
 
-    send_code_email(email, code, "register")
+    ok = send_code_email(email, code, "register")
+    if not ok:
+        db.query(models.EmailCode).filter(
+            models.EmailCode.email == email,
+            models.EmailCode.purpose == "register",
+        ).delete(synchronize_session=False)
+        db.delete(user)
+        db.commit()
+        raise HTTPException(status_code=502, detail="Не удалось отправить письмо. Попробуйте позже.")
+
     return {"sent": True}
 
 
@@ -271,7 +381,7 @@ def register_confirm(data: schemas.CodeConfirm, db: Session = Depends(get_db)):
 
     if not rec or rec.code != data.code.strip():
         raise HTTPException(status_code=400, detail="Неверный код")
-    if rec.expires_at < datetime.utcnow():
+    if _aware(rec.expires_at) < datetime.now(timezone.utc):
         raise HTTPException(status_code=400, detail="Код истёк, запросите новый")
 
     user = db.query(models.User).filter(models.User.email == email).first()
@@ -284,7 +394,7 @@ def register_confirm(data: schemas.CodeConfirm, db: Session = Depends(get_db)):
     db.query(models.EmailCode).filter(
         models.EmailCode.email == email,
         models.EmailCode.purpose == "register",
-    ).delete()
+    ).delete(synchronize_session=False)
     db.commit()
 
     token = generate_token(user.login, user.email)
@@ -313,14 +423,28 @@ def login(data: schemas.LoginInput, db: Session = Depends(get_db)):
 def reset_start(data: schemas.ResetStart, db: Session = Depends(get_db)):
     email = data.email.strip().lower()
     user = db.query(models.User).filter(models.User.email == email).first()
+    recent = db.query(models.EmailCode).filter(
+        models.EmailCode.email == email,
+        models.EmailCode.purpose == "reset",
+        models.EmailCode.created_at > datetime.now(timezone.utc) - timedelta(minutes=3),
+    ).first()
+    if recent:
+        raise HTTPException(status_code=429, detail="Слишком часто. Подождите 3 минуты.")
 
     if user and user.is_verified:
+        db.query(models.EmailCode).filter(
+            models.EmailCode.email == email,
+            models.EmailCode.purpose == "reset",
+        ).delete(synchronize_session=False)
+        db.commit()
+
         code = generate_code()
         db.add(models.EmailCode(
             email=email, code=code, purpose="reset", expires_at=code_expiry(),
         ))
         db.commit()
         send_code_email(email, code, "reset")
+
     return {"sent": True}
 
 
@@ -329,9 +453,6 @@ def reset_start(data: schemas.ResetStart, db: Session = Depends(get_db)):
 def reset_confirm(data: schemas.ResetConfirm, db: Session = Depends(get_db)):
     email = data.email.strip().lower()
 
-    if len(data.new_password) < 6:
-        raise HTTPException(status_code=400, detail="Пароль минимум 6 символов")
-
     rec = db.query(models.EmailCode).filter(
         models.EmailCode.email == email,
         models.EmailCode.purpose == "reset",
@@ -339,7 +460,7 @@ def reset_confirm(data: schemas.ResetConfirm, db: Session = Depends(get_db)):
 
     if not rec or rec.code != data.code.strip():
         raise HTTPException(status_code=400, detail="Неверный код")
-    if rec.expires_at < datetime.utcnow():
+    if _aware(rec.expires_at) < datetime.now(timezone.utc):
         raise HTTPException(status_code=400, detail="Код истёк, запросите новый")
 
     user = db.query(models.User).filter(models.User.email == email).first()
@@ -352,7 +473,7 @@ def reset_confirm(data: schemas.ResetConfirm, db: Session = Depends(get_db)):
     db.query(models.EmailCode).filter(
         models.EmailCode.email == email,
         models.EmailCode.purpose == "reset",
-    ).delete()
+    ).delete(synchronize_session=False)
     db.commit()
 
     token = generate_token(user.login, user.email)
@@ -363,7 +484,23 @@ def reset_confirm(data: schemas.ResetConfirm, db: Session = Depends(get_db)):
 @app.post("/auth/forgot-login")
 def forgot_login(data: schemas.ResetStart, db: Session = Depends(get_db)):
     email = data.email.strip().lower()
+
+    recent = db.query(models.EmailCode).filter(
+        models.EmailCode.email == email,
+        models.EmailCode.purpose == "login_reminder",
+        models.EmailCode.created_at > datetime.now(timezone.utc) - timedelta(minutes=3),
+    ).first()
+    if recent:
+        raise HTTPException(status_code=429, detail="Слишком часто. Подождите 3 минуты.")
+
     user = db.query(models.User).filter(models.User.email == email).first()
     if user and user.is_verified:
-        send_code_email(email, f"Ваш логин: {user.login}", "register")
+        db.add(models.EmailCode(
+            email=email,
+            code="",
+            purpose="login_reminder",
+            expires_at=code_expiry(),
+        ))
+        db.commit()
+        send_code_email(email, f"Ваш логин: {user.login}", "login_reminder")
     return {"sent": True}
