@@ -1508,11 +1508,11 @@ function TestTaking({ test, onCancel, onSubmit }) {
             </p>
           )}
           <div className="mb-4" />
-          <label className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-1 block">Ваше имя</label>
+          <label className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-1 block">Ваш ID</label>
           <input
             value={name}
             onChange={(e) => { setName(e.target.value); setNameError(''); }}
-            placeholder="Введите имя"
+            placeholder="Введите ваш ID"
             className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 mb-2 focus:ring-2 focus:ring-indigo-500 outline-none dark:bg-gray-700 dark:text-gray-100"
           />
           {nameError && (
@@ -1521,7 +1521,7 @@ function TestTaking({ test, onCancel, onSubmit }) {
           <button
             onClick={() => {
               if (!name.trim()) {
-                setNameError('Введите имя');
+                setNameError('Введите ваш ID');
                 return;
               }
               if (test.timeLimit > 0) setTimeLeft(test.timeLimit * 60);
