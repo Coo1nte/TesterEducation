@@ -29,6 +29,11 @@ function extractError(errData, fallback) {
 // Получить все тесты пользователя
 export async function fetchTests() {
     const res = await fetch(`${API_URL}/tests`, { headers: authHeaders() });
+    if (res.status === 401) {
+        const e = new Error("Требуется вход");
+        e.status = 401;
+        throw e;
+    }
     if (!res.ok) throw new Error("Не удалось загрузить тесты");
     return res.json();
 }
@@ -55,6 +60,7 @@ export async function createTest(test) {
             random_count: test.randomCount || 0,
         }),
     });
+    if (res.status === 401) { const e = new Error("Требуется вход"); e.status = 401; throw e; }
     if (!res.ok) throw new Error("Не удалось создать тест");
     return res.json();
 }
@@ -62,6 +68,7 @@ export async function createTest(test) {
 // Удалить тест
 export async function deleteTest(testId) {
     const res = await fetch(`${API_URL}/tests/${testId}`, { method: "DELETE", headers: authHeaders() });
+    if (res.status === 401) { const e = new Error("Требуется вход"); e.status = 401; throw e; }
     if (!res.ok) throw new Error("Не удалось удалить тест");
     return res.json();
 }

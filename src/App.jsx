@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   User, Plus, FileText, BarChart3, ClipboardList, Trash2,
   ChevronLeft, Check, X, CircleDot, /*Image as ImageIcon,*/
@@ -15,7 +15,7 @@ import {
   registerConfirm, loginUser, resetStart, resetConfirm, forgotLogin
 } from './api';
 
-import { csvToQuestions } from './csvToQuestions';
+import { csvToQuestions } from './csvImport';
 
 // Типы тестов — объявлены в начале, доступны всем компонентам
 const TYPE_LABELS = {
@@ -28,10 +28,8 @@ const TYPE_LABELS = {
 export default function TestApp() {
   // При запуске пытаемся достать сохранённое имя из localStorage
   const savedUser = localStorage.getItem('username') || '';
-
   const [screen, setScreen] = useState(savedUser ? 'menu' : 'login');
   const [username, setUsername] = useState(savedUser);
-  const [usernameInput, setUsernameInput] = useState('');
   const [tests, setTests] = useState([]);
   const [activeTest, setActiveTest] = useState(null); // тест, который проходим/смотрим
   const [editingTest, setEditingTest] = useState(null); // тест, который редактируем
@@ -40,21 +38,11 @@ export default function TestApp() {
   const [activeFolder, setActiveFolder] = useState('');
 
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem('darkMode') === 'true');
-
+  
   useEffect(() => {
     document.documentElement.classList.toggle('dark', darkMode);
     localStorage.setItem('darkMode', darkMode);
   }, [darkMode]);
-
-  // Сохраняем данные пользователя после успешного входа/регистрации
-  const applyAuth = (data) => {
-    localStorage.setItem('token', data.token);
-    localStorage.setItem('username', data.login);
-    localStorage.setItem('email', data.email);
-    setUsername(data.login);
-    loadTests(data.login);
-    setScreen('menu');
-  };
 
 
   // Выход из аккаунта: чистим имя и возвращаем на экран входа
@@ -66,43 +54,11 @@ export default function TestApp() {
     setScreen('login');
   };
 
-
-  // Тест, ссылкой на который сейчас делимся (для модального окна)
-  const [shareTest, setShareTest] = useState(null);
-
-  // Гостевой режим: когда зашли по ссылке ?code=...
-  const [guestTest, setGuestTest] = useState(null);  // загруженный тест
-  const [guestLoading, setGuestLoading] = useState(false);
-  const [guestError, setGuestError] = useState('');
-
-  // При запуске приложения проверяем — есть ли в адресе ?code=...
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const code = params.get('code');
-    if (code) {
-      setGuestLoading(true);
-      setScreen('guest');           // отдельный экран для гостя
-      fetchTestByCode(code)
-        .then((test) => {
-          setGuestTest(test);
-          setGuestLoading(false);
-        })
-        .catch(() => {
-          setGuestError('Тест не найден или ссылка устарела');
-          setGuestLoading(false);
-        });
-    } else if (savedUser) {
-      // Восстанавливаем тесты из базы при перезагрузке страницы
-      loadTests(savedUser);
-    }
-  }, []);
-
-
   // Загрузить тесты пользователя с сервера
-  const loadTests = async (owner) => {
+  const loadTests = async () => {
     try {
       setLoading(true);
-      const data = await fetchTests(owner);
+      const data = await fetchTests();
       setTests(data);
     } catch (e) {
       console.error(e);
@@ -112,6 +68,47 @@ export default function TestApp() {
     }
   };
 
+  // Сохраняем данные пользователя после успешного входа/регистрации
+  const applyAuth = (data) => {
+    localStorage.setItem('token', data.token);
+    localStorage.setItem('username', data.login);
+    localStorage.setItem('email', data.email);
+    setUsername(data.login);
+    loadTests();
+    setScreen('menu');
+  };
+
+
+  // Тест, ссылкой на который сейчас делимся (для модального окна)
+  const [shareTest, setShareTest] = useState(null);
+  // Гостевой режим: когда зашли по ссылке ?code=...
+  const [guestTest, setGuestTest] = useState(null);
+  const [guestLoading, setGuestLoading] = useState(false);
+  const [guestError, setGuestError] = useState('');
+  const [attemptKey, setAttemptKey] = useState(0);   // для пересоздания TestTaking
+
+  // При запуске приложения проверяем — есть ли в адресе ?code=...
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get('code');
+
+    if (code) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setGuestLoading(true);
+      setScreen('guest');
+      fetchTestByCode(code)
+        .then((test) => {
+          setGuestTest(test);
+          setGuestLoading(false);
+        })
+        .catch(() => {
+          setGuestError('Тест не найден или ссылка устарела');
+          setGuestLoading(false);
+        });
+    } else if (localStorage.getItem('username')) {
+      loadTests();
+    }
+  }, []);
 
   // ----- ГОСТЕВОЙ ЭКРАН (заход по ссылке ?code=) -----
   if (screen === 'guest') {
@@ -147,14 +144,17 @@ export default function TestApp() {
     if (guestTest) {
       return (
         <TestTaking
-          key={Date.now()}
+          key={`guest-${attemptKey}`}
           test={guestTest}
           onCancel={() => setScreen('guest-done')}
           onSubmit={async (submission) => {
             try {
               await submitTest(guestTest.id, submission);
-            } catch { }
-            setScreen('guest-done');
+              setScreen('guest-done');
+            } catch (e) {
+              console.error('Не удалось отправить ответы:', e);
+              alert('Не удалось отправить ответы. Попробуйте ещё раз.');
+            }
           }}
         />
       );
@@ -176,12 +176,25 @@ export default function TestApp() {
           {/* Пройти этот же тест ещё раз */}
           {guestTest && (
             <button
-              onClick={() => setScreen('guest')}
+              onClick={() => {
+                setAttemptKey((k) => k + 1);
+                setScreen('guest');
+              }}
               className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2.5 rounded-lg mb-2"
             >
               Пройти ещё раз
             </button>
           )}
+        <button
+            onClick={() => {
+              setGuestTest(null);
+              window.history.replaceState({}, '', '/');
+              setScreen(localStorage.getItem('username') ? 'menu' : 'login');
+            }}
+            className="w-full bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-2.5 rounded-lg"
+        >
+            {localStorage.getItem('username') ? 'В личный кабинет' : 'Создать свой тест'}
+        </button>
         </div>
       </div>
     );
@@ -191,7 +204,6 @@ export default function TestApp() {
   if (screen === 'login') {
     return <AuthScreen onAuth={applyAuth} />;
   }
-
 
   // ----- ГЛАВНОЕ МЕНЮ -----
   if (screen === 'menu') {
@@ -233,8 +245,9 @@ export default function TestApp() {
         username={username}
         editingTest={editingTest}
         onCancel={() => {
+          const wasEditing = !!editingTest;
           setEditingTest(null);
-          setScreen(editingTest ? 'mytests' : 'menu');
+          setScreen(wasEditing ? 'mytests' : 'menu');
         }}
         onSave={async (test) => {
           try {
@@ -258,95 +271,116 @@ export default function TestApp() {
     );
   }
 
-
   // ----- МОИ ТЕСТЫ -----
-  if (screen === 'mytests') {
-    return (
-      <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
-        <Header username={username} onLogout={handleLogout} darkMode={darkMode} onToggleDark={() => setDarkMode(!darkMode)} />
-        <div className="max-w-md mx-auto p-4">
-          <button
-            onClick={() => setScreen('menu')}
-            className="flex items-center text-indigo-600 mb-3 text-sm font-medium"
-          >
-            <ChevronLeft className="w-4 h-4" /> Назад
-          </button>
-          <h2 className="text-lg font-bold text-gray-800 dark:text-gray-100 mb-3">Мои тесты</h2>
-          {(() => {
-            const folders = [...new Set(tests.map(t => t.folder || '').filter(Boolean))];
-            if (folders.length === 0) return null;
-            return (
-              <div className="flex gap-2 mb-3 overflow-x-auto pb-1">
-                <button
-                  onClick={() => setActiveFolder('')}
-                  className={`px-3 py-1 rounded-full text-sm font-medium whitespace-nowrap ${!activeFolder ? 'bg-indigo-600 text-white' : 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300'}`}
-                >Все</button>
-                {folders.map(f => (
+if (screen === 'mytests') {
+  return (
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
+      <Header
+        username={username}
+        onLogout={handleLogout}
+        darkMode={darkMode}
+        onToggleDark={() => setDarkMode(!darkMode)}
+      />
+      <div className="max-w-md mx-auto p-4">
+        <button
+          onClick={() => setScreen('menu')}
+          className="flex items-center text-indigo-600 mb-3 text-sm font-medium"
+        >
+          <ChevronLeft className="w-4 h-4" /> Назад
+        </button>
+
+        <h2 className="text-lg font-bold text-gray-800 dark:text-gray-100 mb-3">
+          Мои тесты
+        </h2>
+
+        {loading ? (
+          <div className="text-center text-gray-400 py-8">
+            <ClipboardList className="w-10 h-10 mx-auto mb-2 animate-pulse text-indigo-400" />
+            Загрузка...
+          </div>
+        ) : (
+          <>
+            {(() => {
+              const folders = [...new Set(tests.map(t => t.folder || '').filter(Boolean))];
+              if (folders.length === 0) return null;
+              return (
+                <div className="flex gap-2 mb-3 overflow-x-auto pb-1">
                   <button
-                    key={f}
-                    onClick={() => setActiveFolder(f)}
-                    className={`px-3 py-1 rounded-full text-sm font-medium whitespace-nowrap flex items-center gap-1 ${activeFolder === f ? 'bg-indigo-600 text-white' : 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300'}`}
+                    onClick={() => setActiveFolder('')}
+                    className={`px-3 py-1 rounded-full text-sm font-medium whitespace-nowrap ${!activeFolder ? 'bg-indigo-600 text-white' : 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300'}`}
                   >
-                    <FolderOpen className="w-3 h-3" /> {f}
+                    Все
                   </button>
-                ))}
+                  {folders.map(f => (
+                    <button
+                      key={f}
+                      onClick={() => setActiveFolder(f)}
+                      className={`px-3 py-1 rounded-full text-sm font-medium whitespace-nowrap flex items-center gap-1 ${activeFolder === f ? 'bg-indigo-600 text-white' : 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300'}`}
+                    >
+                      <FolderOpen className="w-3 h-3" /> {f}
+                    </button>
+                  ))}
+                </div>
+              );
+            })()}
+
+            {tests.length === 0 ? (
+              <div className="bg-white dark:bg-gray-800 rounded-xl p-8 text-center text-gray-400">
+                <FileText className="w-10 h-10 mx-auto mb-2 opacity-50" />
+                Пока нет тестов.<br />Создайте первый!
               </div>
-            );
-          })()}
-          {tests.length === 0 ? (
-            <div className="bg-white dark:bg-gray-800 rounded-xl p-8 text-center text-gray-400">
-              <FileText className="w-10 h-10 mx-auto mb-2 opacity-50" />
-              Пока нет тестов.<br />Создайте первый!
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {tests.filter(t => !activeFolder || (t.folder || '') === activeFolder).map((t) => (
-                <TestListItem
-                  key={t.id}
-                  test={t}
-                  onTake={() => { setActiveTest(t); setScreen('take'); }}
-                  onResults={() => { setResultsSource('mytests'); setActiveTest(t); setScreen('results'); }}
-                  onEdit={() => { setEditingTest(t); setScreen('create'); }}
-                  onDelete={async () => {
-                    try {
-                      await deleteTest(t.id);
-                      setTests((prev) => prev.filter((x) => x.id !== t.id));
-                    } catch (e) {
-                      console.error(e);
-                      alert('Не удалось удалить тест.');
-                    }
-                  }}
-                  onShare={() => setShareTest(t)}
-                  onDuplicate={async () => {
-                    try {
-                      const copy = await createTest({
-                        owner: username,
-                        title: t.title + ' (копия)',
-                        type: t.type,
-                        questions: t.questions,
-                        timeLimit: t.timeLimit || 0,
-                        shuffleQuestions: t.shuffleQuestions || false,
-                        folder: t.folder || '',
-                        randomCount: t.randomCount || 0,
-                      });
-                      setTests((prev) => [...prev, copy]);
-                    } catch (e) {
-                      console.error(e);
-                      alert('Не удалось дублировать тест.');
-                    }
-                  }}
-                />
-              ))}
-            </div>
-          )}
-        </div>
+            ) : (
+              <div className="space-y-3">
+                {tests
+                  .filter(t => !activeFolder || (t.folder || '') === activeFolder)
+                  .map(t => (
+                    <TestListItem
+                      key={t.id}
+                      test={t}
+                      onTake={() => { setActiveTest(t); setAttemptKey(0); setScreen('take'); }}
+                      onResults={() => { setResultsSource('mytests'); setActiveTest(t); setScreen('results'); }}
+                      onEdit={() => { setEditingTest(t); setScreen('create'); }}
+                      onDelete={async () => {
+                        try {
+                          await deleteTest(t.id);
+                          setTests(prev => prev.filter(x => x.id !== t.id));
+                        } catch (e) {
+                          console.error(e);
+                          alert('Не удалось удалить тест.');
+                        }
+                      }}
+                      onShare={() => setShareTest(t)}
+                      onDuplicate={async () => {
+                        try {
+                          const copy = await createTest({
+                            title: t.title + ' (копия)',
+                            type: t.type,
+                            questions: t.questions,
+                            timeLimit: t.timeLimit || 0,
+                            shuffleQuestions: t.shuffleQuestions || false,
+                            folder: t.folder || '',
+                            randomCount: t.randomCount || 0,
+                          });
+                          setTests(prev => [...prev, copy]);
+                        } catch (e) {
+                          console.error(e);
+                          alert('Не удалось дублировать тест.');
+                        }
+                      }}
+                    />
+                  ))}
+              </div>
+            )}
+          </>
+        )}
+
         {shareTest && (
           <ShareModal test={shareTest} onClose={() => setShareTest(null)} />
         )}
       </div>
-    );
-  }
-
+    </div>
+  );
+}
 
   // ----- СПИСОК РЕЗУЛЬТАТОВ (отдельный раздел) -----
   if (screen === 'resultslist') {
@@ -403,6 +437,7 @@ export default function TestApp() {
   if (screen === 'take' && activeTest) {
     return (
       <TestTaking
+        key={`owner-${activeTest.id}-${attemptKey}`}
         test={activeTest}
         onCancel={() => setScreen('mytests')}
         onSubmit={async (submission) => {
@@ -567,7 +602,7 @@ function TestListItem({ test, onTake, onResults, onEdit, onDelete, onShare, onDu
 
 /* ============ КОНСТРУКТОР ТЕСТА ============ */
 
-function TestCreator({ username, editingTest, onCancel, onSave }) {
+function TestCreator({ editingTest, onCancel, onSave }) {
   const [title, setTitle] = useState(editingTest ? editingTest.title : '');
   const [type, setType] = useState(editingTest ? editingTest.type : 'quiz');
   const [questions, setQuestions] = useState(editingTest ? editingTest.questions : []);
@@ -821,16 +856,12 @@ function TestCreator({ username, editingTest, onCancel, onSave }) {
     }
     setError('');
     onSave({
-      id: Date.now(),
-      owner: username,
       title: title.trim(),
       type,
       questions,
       timeLimit,
       shuffleQuestions,
       folder,
-      submissions: [],
-      shareCode: Math.random().toString(36).slice(2, 8).toUpperCase(),
       randomCount,
     });
   };
@@ -955,9 +986,10 @@ function TestCreator({ username, editingTest, onCancel, onSave }) {
               min={0}
               max={questions.length}
               value={randomCount}
-              onChange={(e) =>
-                setRandomCount(Math.max(0, parseInt(e.target.value) || 0))
-              }
+              onChange={(e) => {
+                const v = parseInt(e.target.value) || 0;
+                setRandomCount(Math.min(Math.max(0, v), questions.length));
+              }}
               className="w-20 border border-gray-300 rounded-lg px-3 py-1.5 text-center focus:ring-2 focus:ring-indigo-500 outline-none dark:bg-gray-700 dark:text-gray-100"
             />
           </div>
@@ -1322,10 +1354,17 @@ function TestTaking({ test, onCancel, onSubmit }) {
   const [answers, setAnswers] = useState({});
   const [timeLeft, setTimeLeft] = useState(null);
   const [requiredError, setRequiredError] = useState('');
-
+  const [nameError, setNameError] = useState('');
   const [displayQuestions] = useState(() => {
-    const qs = [...test.questions];
-    if (test.shuffleQuestions) {
+    let qs = [...test.questions];
+    const n = test.randomCount || 0;
+    if (n > 0 && n < qs.length) {
+      for (let i = qs.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [qs[i], qs[j]] = [qs[j], qs[i]];
+      }
+      qs = qs.slice(0, n);
+    } else if (test.shuffleQuestions) {
       for (let i = qs.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [qs[i], qs[j]] = [qs[j], qs[i]];
@@ -1335,32 +1374,11 @@ function TestTaking({ test, onCancel, onSubmit }) {
   });
 
   useEffect(() => {
-    if (!started || !test.timeLimit || test.timeLimit <= 0) return;
-    setTimeLeft(test.timeLimit * 60);
-  }, [started, test.timeLimit]);
-
-  useEffect(() => {
+    if (!started) return;
     if (timeLeft === null || timeLeft <= 0) return;
-    const timer = setInterval(() => {
-      setTimeLeft((prev) => {
-        if (prev <= 1) {
-          clearInterval(timer);
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [timeLeft !== null]);
-
-  const autoSubmitRef = React.useRef(false);
-  useEffect(() => {
-    if (timeLeft === 0 && started && !autoSubmitRef.current) {
-      autoSubmitRef.current = true;
-      doSubmit(true);
-    }
-  }, [timeLeft]);
-
+    const t = setTimeout(() => setTimeLeft((v) => v - 1), 1000);
+    return () => clearTimeout(t);
+  }, [started, timeLeft]);
   const setAnswer = (qid, patch) =>
     setAnswers((prev) => ({ ...prev, [qid]: { ...prev[qid], ...patch } }));
 
@@ -1380,6 +1398,94 @@ function TestTaking({ test, onCancel, onSubmit }) {
     const s = seconds % 60;
     return `${m}:${s.toString().padStart(2, '0')}`;
   };
+
+    const doSubmit = useCallback((force = false) => {
+    if (!force) {
+      const unanswered = displayQuestions.filter((q) => {
+        if (!q.required) return false;
+        const a = answers[q.id] || {};
+        if (q.format === 'match') return Object.keys(a.matches || {}).length === 0;
+        if (q.format === 'order') return (a.orderItems || []).length === 0;
+        if (q.format === 'text') return !(a.text && a.text.trim());
+        return (a.selected || []).length === 0;
+      });
+      if (unanswered.length > 0) {
+        const idx = displayQuestions.indexOf(unanswered[0]) + 1;
+        setRequiredError(`Ответьте на обязательный вопрос ${idx}`);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        return;
+      }
+    }
+    setRequiredError('');
+
+    let score = 0;
+    let answered = 0;
+    const detailed = displayQuestions.map((q) => {
+      const a = answers[q.id] || {};
+      let correct = null;
+
+    if (q.format === 'order') {
+      const userItems = a.orderItems || [];
+      if (userItems.length > 0) answered++;
+      if (test.type === 'quiz') {
+        const correctOrder = (q.orderItems || []).map((item) => item.id);
+        const userOrderIds = userItems.map((item) => item.id);
+        correct = JSON.stringify(correctOrder) === JSON.stringify(userOrderIds);
+        if (correct) score++;
+      }
+      return { qid: q.id, selected: [], text: '', correct, matches: {}, orderItems: userItems };
+    }
+
+    if (q.format === 'match') {
+      const userMatches = a.matches || {};
+      if (Object.keys(userMatches).length > 0) answered++;
+      if (test.type === 'quiz') {
+        const pairs = q.pairs || [];
+        correct = pairs.length > 0 && pairs.every((p) => userMatches[p.id] === p.id);
+        if (correct) score++;
+      }
+      return { qid: q.id, selected: [], text: '', correct, matches: userMatches };
+    }
+
+    if (q.format === 'text') {
+      if (a.text && a.text.trim()) answered++;
+    } else {
+      if ((a.selected || []).length > 0) answered++;
+    }
+
+      if (test.type === 'quiz') {
+        if (q.format === 'text') {
+          correct = (a.text || '').trim().toLowerCase() === (q.correctText || '').trim().toLowerCase();
+        } else {
+          const correctIds = q.options.filter((o) => o.correct).map((o) => o.id).sort();
+          const sel = [...(a.selected || [])].sort();
+          correct = JSON.stringify(correctIds) === JSON.stringify(sel);
+        }
+        if (correct) score++;
+      }
+      return { qid: q.id, selected: a.selected || [], text: a.text || '', correct, matches: {} };
+    });
+
+    onSubmit({
+      id: Date.now(),
+      name: name.trim(),
+      score,
+      total: displayQuestions.length,
+      answered,
+      skipped: displayQuestions.length - answered,
+      detailed,
+      at: new Date().toLocaleString('ru-RU'),
+    });
+  }, [answers, name, displayQuestions, test.type, onSubmit]);
+
+  const autoSubmitRef = React.useRef(false);
+  useEffect(() => {
+    if (timeLeft === 0 && started && !autoSubmitRef.current) {
+      autoSubmitRef.current = true;
+      doSubmit(true);
+    }
+  }, [timeLeft, started, doSubmit]);
+
 
   if (!started) {
     return (
@@ -1405,12 +1511,22 @@ function TestTaking({ test, onCancel, onSubmit }) {
           <label className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-1 block">Ваше имя</label>
           <input
             value={name}
-            onChange={(e) => setName(e.target.value)}
+            onChange={(e) => { setName(e.target.value); setNameError(''); }}
             placeholder="Введите имя"
-            className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 mb-4 focus:ring-2 focus:ring-indigo-500 outline-none dark:bg-gray-700 dark:text-gray-100"
+            className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 mb-2 focus:ring-2 focus:ring-indigo-500 outline-none dark:bg-gray-700 dark:text-gray-100"
           />
+          {nameError && (
+            <p className="text-xs text-red-500 mb-2">{nameError}</p>
+          )}
           <button
-            onClick={() => name.trim() && setStarted(true)}
+            onClick={() => {
+              if (!name.trim()) {
+                setNameError('Введите имя');
+                return;
+              }
+              if (test.timeLimit > 0) setTimeLeft(test.timeLimit * 60);
+              setStarted(true);
+            }}
             className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2.5 rounded-lg mb-2"
           >
             Начать
@@ -1422,89 +1538,6 @@ function TestTaking({ test, onCancel, onSubmit }) {
       </div>
     );
   }
-
-  const doSubmit = (force = false) => {
-    if (!force) {
-      const unanswered = displayQuestions.filter((q) => {
-        if (!q.required) return false;
-        const a = answers[q.id] || {};
-        if (q.format === 'match') return Object.keys(a.matches || {}).length === 0;
-        if (q.format === 'order') return (a.orderItems || []).length === 0;
-        if (q.format === 'text') return !(a.text && a.text.trim());
-        return (a.selected || []).length === 0;
-      });
-      if (unanswered.length > 0) {
-        const idx = displayQuestions.indexOf(unanswered[0]) + 1;
-        setRequiredError(`Ответьте на обязательный вопрос ${idx}`);
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-        return;
-      }
-    }
-    setRequiredError('');
-
-    let score = 0;
-    let answered = 0;
-    const detailed = test.questions.map((q) => {
-      const a = answers[q.id] || {};
-      let hasAnswer = false;
-      let correct = null;
-
-      if (q.format === 'order') {
-        const userItems = a.orderItems || [];
-        hasAnswer = userItems.length > 0;
-        if (test.type === 'quiz') {
-          const correctOrder = (q.orderItems || []).map(item => item.id);
-          const userOrderIds = userItems.map(item => item.id);
-          correct = JSON.stringify(correctOrder) === JSON.stringify(userOrderIds);
-          if (correct) score++;
-        }
-        if (hasAnswer) answered++;
-        return { qid: q.id, selected: [], text: '', correct, matches: {}, orderItems: userItems };
-      }
-
-      if (q.format === 'match') {
-        const userMatches = a.matches || {};
-        hasAnswer = Object.keys(userMatches).length > 0;
-        if (test.type === 'quiz') {
-          const pairs = q.pairs || [];
-          correct = pairs.length > 0 && pairs.every((p) => userMatches[p.id] === p.id);
-          if (correct) score++;
-        }
-        if (hasAnswer) answered++;
-        return { qid: q.id, selected: [], text: '', correct, matches: userMatches };
-      }
-
-      if (q.format === 'text') {
-        hasAnswer = !!(a.text && a.text.trim());
-      } else {
-        hasAnswer = (a.selected || []).length > 0;
-      }
-      if (hasAnswer) answered++;
-
-      if (test.type === 'quiz') {
-        if (q.format === 'text') {
-          correct = (a.text || '').trim().toLowerCase() === (q.correctText || '').trim().toLowerCase();
-        } else {
-          const correctIds = q.options.filter((o) => o.correct).map((o) => o.id).sort();
-          const sel = [...(a.selected || [])].sort();
-          correct = JSON.stringify(correctIds) === JSON.stringify(sel);
-        }
-        if (correct) score++;
-      }
-      return { qid: q.id, selected: a.selected || [], text: a.text || '', correct, matches: {} };
-    });
-
-    onSubmit({
-      id: Date.now(),
-      name: name.trim(),
-      score,
-      total: test.questions.length,
-      answered,
-      skipped: test.questions.length - answered,
-      detailed,
-      at: new Date().toLocaleString('ru-RU'),
-    });
-  };
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 pb-24">
@@ -1861,7 +1894,15 @@ function TestResults({ test, onBack, onDeleteSubmission }) {
     } else {
       headers.push('Отвечено', 'Пропущено');
     }
-    test.questions.forEach((q, i) => headers.push(`В${i + 1}: ${q.text}`));
+
+    // собираем qid, которые реально кто-то видел
+    const seenQids = new Set();
+    subs.forEach((s) => (s.detailed || []).forEach((d) => seenQids.add(d.qid)));
+
+    // оставляем порядок как в test.questions
+    const servedQuestions = test.questions.filter((q) => seenQids.has(q.id));
+
+    servedQuestions.forEach((q, i) => headers.push(`В${i + 1}: ${q.text}`));
 
     const rows = subs.map((s) => {
       const row = [s.name, s.at];
@@ -1870,8 +1911,8 @@ function TestResults({ test, onBack, onDeleteSubmission }) {
       } else {
         row.push(s.answered, s.skipped);
       }
-      test.questions.forEach((q) => {
-        const d = (s.detailed || []).find((x) => x.qid === q.id);
+      servedQuestions.forEach((q) => {
+        const d = (s.detailed || []).find((x) => x.qid === q.id)
         if (!d) { row.push(''); return; }
         if (q.format === 'text') {
           row.push(d.text || '');
@@ -1938,11 +1979,15 @@ function TestResults({ test, onBack, onDeleteSubmission }) {
                 {test.type === 'quiz' ? 'прохождений' : 'опрошено человек'}
               </div>
             </div>
-            {test.type === 'quiz' && (
+            {test.type === 'quiz' && subs.length > 0 && (
               <div className="bg-emerald-50 rounded-lg p-3 text-center">
                 <div className="text-2xl font-bold text-emerald-600">
                   {avgScore ?? '—'}
-                  {avgScore && <span className="text-sm text-gray-400">/{test.questions.length}</span>}
+                 {avgScore && (
+                    <span className="text-sm text-gray-400">
+                      /{subs[0]?.total || test.questions.length}
+                    </span>
+                  )}
                 </div>
                 <div className="text-xs text-gray-500">средний балл</div>
               </div>
@@ -2016,9 +2061,12 @@ function TestResults({ test, onBack, onDeleteSubmission }) {
                   {/* Развёрнутый разбор ответов */}
                   {test.type === 'quiz' && openSub === s.id && (
                     <div className="px-4 pb-3 space-y-3 bg-gray-50">
-                      {test.questions.map((q, idx) => (
-                        <AnswerReview key={q.id} q={q} idx={idx} detail={s.detailed.find((d) => d.qid === q.id)} />
-                      ))}
+                      {test.questions
+                        .filter((q) => s.detailed.find((d) => d.qid === q.id))
+                        .map((q, idx) => (
+                          <AnswerReview key={q.id} q={q} idx={idx} detail={s.detailed.find((d) => d.qid === q.id)} />
+                        ))
+                      }
                     </div>
                   )}
                 </div>
@@ -2031,9 +2079,12 @@ function TestResults({ test, onBack, onDeleteSubmission }) {
                 <div className="text-xs font-semibold text-gray-500 uppercase">
                   Сводка по ответам
                 </div>
-                {test.questions.map((q, idx) => (
+              {test.questions
+                .filter((q) => subs.some((s) => s.detailed.some((d) => d.qid === q.id)))
+                .map((q, idx) => (
                   <QuestionStats key={q.id} q={q} idx={idx} subs={subs} />
-                ))}
+                ))
+              }
               </div>
             )}
           </>
@@ -2704,4 +2755,3 @@ function PasswordInput({ value, onChange, placeholder = 'Пароль', autoComp
     </div>
   );
 }
-

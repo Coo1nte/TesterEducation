@@ -1,21 +1,27 @@
 import os
-import requests as http
+import smtplib
+from email.mime.text import MIMEText
+from email.header import Header
 
-RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
-FROM_EMAIL = os.environ.get("FROM_EMAIL")
-if RESEND_API_KEY and not FROM_EMAIL:
-    raise RuntimeError("FROM_EMAIL обязателен при использовании Resend")
+# Если EMAIL_ENABLED=false — код всегда печатается в лог, SMTP не трогаем
+EMAIL_ENABLED = os.environ.get("EMAIL_ENABLED", "false").lower() == "true"
+
+SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.yandex.ru")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "465"))
+SMTP_USER = os.environ.get("SMTP_USER", "")
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
+SMTP_FROM = os.environ.get("SMTP_FROM", SMTP_USER)
 CODE_TTL_MINUTES = int(os.environ.get("CODE_TTL_MINUTES", "10"))
-HTTP_TIMEOUT = 15
+
+
+def _print_code(to_email: str, subject: str, body: str) -> None:
+    print("=" * 50)
+    print(f"[EMAIL -> {to_email}] {subject}")
+    print(body)
+    print("=" * 50)
 
 
 def send_code_email(to_email: str, code_or_text: str, purpose: str) -> bool:
-    """
-    purpose:
-      'register'        — код подтверждения регистрации
-      'reset'           — код для смены пароля
-      'login_reminder'  — напоминание логина
-    """
     if purpose == "login_reminder":
         subject = "Ваш логин"
         body = code_or_text
@@ -26,44 +32,43 @@ def send_code_email(to_email: str, code_or_text: str, purpose: str) -> bool:
             f"Код действует {CODE_TTL_MINUTES} минут.\n"
             f"Если вы не запрашивали смену пароля — просто проигнорируйте письмо."
         )
-    else:  # register
+    else:
         subject = "Код подтверждения регистрации"
         body = (
             f"Ваш код подтверждения: {code_or_text}\n\n"
             f"Введите его в приложении, чтобы завершить регистрацию.\n"
-            f"Код действует {CODE_TTL_MINUTES} минут.\n"
+            f"Код действует {CODE_TTL_MINUTES} минут."
         )
 
-    # Если API-ключ не задан — печатаем код в лог (для локальной разработки)
-    if not RESEND_API_KEY:
-        print("=" * 50)
-        print(f"[EMAIL -> {to_email}] {subject}")
-        print(body)
-        print("=" * 50)
+    # Dev-режим: SMTP выключен — только печатаем в лог
+    if not EMAIL_ENABLED:
+        _print_code(to_email, subject, body)
         return True
 
+    # SMTP включён, но креды не заданы — тоже печатаем, чтобы не падать
+    if not SMTP_USER or not SMTP_PASSWORD:
+        print("[EMAIL WARN] EMAIL_ENABLED=true, но SMTP_USER/SMTP_PASSWORD не заданы")
+        _print_code(to_email, subject, body)
+        return True
+
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["Subject"] = Header(subject, "utf-8")
+    msg["From"] = SMTP_FROM
+    msg["To"] = to_email
+
     try:
-        resp = http.post(
-            "https://api.resend.com/emails",
-            headers={
-                "Authorization": f"Bearer {RESEND_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "from": f"Конструктор тестов <{FROM_EMAIL}>",
-                "to": [to_email],
-                "subject": subject,
-                "text": body,
-            },
-            timeout=HTTP_TIMEOUT,
-        )
-        if resp.status_code in (200, 201):
-            print(f"[EMAIL OK] Письмо отправлено на {to_email}")
-            return True
+        if SMTP_PORT == 465:
+            with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=15) as s:
+                s.login(SMTP_USER, SMTP_PASSWORD)
+                s.send_message(msg)
         else:
-            print(f"[EMAIL ERROR] {resp.status_code}: {resp.text}")
-            return False
+            with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as s:
+                s.starttls()
+                s.login(SMTP_USER, SMTP_PASSWORD)
+                s.send_message(msg)
+        print(f"[EMAIL OK] Письмо отправлено на {to_email}")
+        return True
     except Exception as e:
         print(f"[EMAIL ERROR] {e}")
-        print(f"[EMAIL -> {to_email}] {subject}\n{body}")
+        _print_code(to_email, subject, body)
         return False

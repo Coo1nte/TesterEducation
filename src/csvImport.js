@@ -184,6 +184,11 @@ export function csvToQuestions(text) {
       errors.push(`Строка ${r + 1}: не указан correct (номер правильного варианта)`);
       continue;
     }
+    const outOfRange = correctNumbers.filter((n) => n < 1 || n > options.length);
+    if (outOfRange.length > 0) {
+      errors.push(`Строка ${r + 1}: номер(а) ${outOfRange.join(', ')} в correct выходят за пределы (вариантов: ${options.length})`);
+      continue;
+    }
 
     const optObjs = options.map((text, i) => ({
       id: baseId + i,

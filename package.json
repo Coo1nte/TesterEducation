@@ -1,13 +1,14 @@
 {
   "name": "TesterEducation",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.0.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "devbackend": "cd ./backend && venv\\Scripts\\activate && uvicorn main:app --reload"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.0",

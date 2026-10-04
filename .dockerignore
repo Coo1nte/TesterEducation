@@ -1,3 +1,35 @@
+# Node
 node_modules
 dist
+.vite
+npm-debug.log*
+
+# Не тащим в контекст фронта
+backend/
+venv/
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Git
 .git
+.gitignore
+
+# IDE
+.vscode
+.idea
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Vite кэш (генерируется локально)
+.vite-temp
+
+# TS
+*.tsbuildinfo
+
+# Логи
+*.log
