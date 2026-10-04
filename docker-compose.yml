@@ -45,23 +45,23 @@ services:
       backend:
         condition: service_healthy
     ports:
-      - "8080:80"
-  caddy:
-    image: caddy:2-alpine
-    container_name: tests_caddy
-    restart: unless-stopped
-    ports:
       - "80:80"
-      - "443:443"
-      - "443:443/udp" # Для HTTP/3
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on:
-      - frontend
+  # caddy:
+  #   image: caddy:2-alpine
+  #   container_name: tests_caddy
+  #   restart: unless-stopped
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #     - "443:443/udp" # Для HTTP/3
+  #   volumes:
+  #     - ./Caddyfile:/etc/caddy/Caddyfile
+  #     - caddy_data:/data
+  #     - caddy_config:/config
+  #   depends_on:
+  #     - frontend
 
 volumes:
   pgdata:
-  caddy_data:
-  caddy_config:
+#  caddy_data:
+#  caddy_config:

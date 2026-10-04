@@ -1,4 +1,5 @@
 import os
+import sys
 import smtplib
 from email.mime.text import MIMEText
 from email.header import Header
@@ -14,7 +15,12 @@ SMTP_FROM = os.environ.get("SMTP_FROM", SMTP_USER)
 CODE_TTL_MINUTES = int(os.environ.get("CODE_TTL_MINUTES", "10"))
 
 
-def _print_code(to_email: str, subject: str, body: str) -> None:
+def _print_code(to_email, subject, body):
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     print("=" * 50)
     print(f"[EMAIL -> {to_email}] {subject}")
     print(body)
