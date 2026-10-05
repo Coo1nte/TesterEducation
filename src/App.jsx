@@ -86,6 +86,7 @@ export default function TestApp() {
   const [guestLoading, setGuestLoading] = useState(false);
   const [guestError, setGuestError] = useState('');
   const [attemptKey, setAttemptKey] = useState(0);   // для пересоздания TestTaking
+  const [lastSubmission, setLastSubmission] = useState(null);
 
   // При запуске приложения проверяем — есть ли в адресе ?code=...
   useEffect(() => {
@@ -141,64 +142,54 @@ export default function TestApp() {
         </div>
       );
     }
-    if (guestTest) {
-      return (
-        <TestTaking
-          key={`guest-${attemptKey}`}
-          test={guestTest}
-          onCancel={() => setScreen('guest-done')}
-          onSubmit={async (submission) => {
-            try {
-              await submitTest(guestTest.id, submission);
-              setScreen('guest-done');
-            } catch (e) {
-              console.error('Не удалось отправить ответы:', e);
-              alert('Не удалось отправить ответы. Попробуйте ещё раз.');
-            }
-          }}
-        />
-      );
-    }
+if (guestTest) {
+  return (
+    <TestTaking
+      key={`guest-${guestTest.id}-${attemptKey}`}
+      test={guestTest}
+      onCancel={() => {
+        setGuestTest(null);
+        setGuestError('');
+        window.history.replaceState({}, '', '/');
+        setScreen(localStorage.getItem('username') ? 'menu' : 'login');
+      }}
+      onSubmit={async (submission) => {
+        try {
+          await submitTest(guestTest.id, submission);
+          // Сохраняем для показа разбора
+          setLastSubmission(submission);
+          setScreen('guest-result');   // новый экран
+        } catch (e) {
+          console.error('Не удалось отправить ответы:', e);
+          alert('Не удалось отправить ответы. Попробуйте ещё раз.');
+        }
+      }}
+    />
+  );
+}
     return null;
   }
 
-  // ----- ЭКРАН БЛАГОДАРНОСТИ ПОСЛЕ ПРОХОЖДЕНИЯ ПО ССЫЛКЕ -----
-  if (screen === 'guest-done') {
-    return (
-      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center p-4">
-        <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-lg w-full max-w-sm p-6 text-center">
-          <div className="bg-emerald-100 rounded-full p-4 w-fit mx-auto mb-3">
-            <Check className="w-8 h-8 text-emerald-600" />
-          </div>
-          <h2 className="text-lg font-bold text-gray-800 dark:text-gray-100 mb-1">Спасибо!</h2>
-          <p className="text-sm text-gray-500 dark:text-gray-400 mb-5">Ваши ответы отправлены.</p>
-
-          {/* Пройти этот же тест ещё раз */}
-          {guestTest && (
-            <button
-              onClick={() => {
-                setAttemptKey((k) => k + 1);
-                setScreen('guest');
-              }}
-              className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2.5 rounded-lg mb-2"
-            >
-              Пройти ещё раз
-            </button>
-          )}
-        <button
-            onClick={() => {
-              setGuestTest(null);
-              window.history.replaceState({}, '', '/');
-              setScreen(localStorage.getItem('username') ? 'menu' : 'login');
-            }}
-            className="w-full bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-2.5 rounded-lg"
-        >
-            {localStorage.getItem('username') ? 'В личный кабинет' : 'Создать свой тест'}
-        </button>
-        </div>
-      </div>
-    );
-  }
+  // ----- РЕЗУЛЬТАТ ПРОХОЖДЕНИЯ (для гостя, сразу после отправки) -----
+  if (screen === 'guest-result' && lastSubmission && guestTest) {
+  return (
+    <TestResultScreen
+      test={guestTest}
+      submission={lastSubmission}
+      onRetry={() => {
+        setLastSubmission(null);
+        setAttemptKey((k) => k + 1);
+        setScreen('guest');
+      }}
+      onHome={() => {
+        setGuestTest(null);
+        setLastSubmission(null);
+        window.history.replaceState({}, '', '/');
+        setScreen(localStorage.getItem('username') ? 'menu' : 'login');
+      }}
+    />
+  );
+}
 
   // ----- ЭКРАН АВТОРИЗАЦИИ (вход / регистрация / сброс пароля) -----
   if (screen === 'login') {
@@ -434,21 +425,23 @@ if (screen === 'mytests') {
 
 
   // ----- ПРОХОЖДЕНИЕ ТЕСТА -----
-  if (screen === 'take' && activeTest) {
-    return (
-      <TestTaking
-        key={`owner-${activeTest.id}-${attemptKey}`}
-        test={activeTest}
-        onCancel={() => setScreen('mytests')}
-        onSubmit={async (submission) => {
-          try {
-            const updated = await submitTest(activeTest.id, submission);
-            setTests((prev) =>
-              prev.map((t) => (t.id === updated.id ? updated : t))
-            );
-            setActiveTest(updated);
-            setScreen('results');
-          } catch (e) {
+    if (screen === 'take' && activeTest) {
+      return (
+        <TestTaking
+          key={`owner-${activeTest.id}-${attemptKey}`}
+          test={activeTest}
+          onCancel={() => setScreen('mytests')}
+          onSubmit={async (submission) => {
+            try {
+              const updated = await submitTest(activeTest.id, submission);
+              setTests((prev) =>
+                prev.map((t) => (t.id === updated.id ? updated : t))
+              );
+              setActiveTest(updated);
+              // Показываем результат тому, кто прошёл
+              setLastSubmission(submission);
+              setScreen('owner-result');
+            } catch (e) {
             console.error(e);
             alert('Не удалось отправить ответы. Запущен ли сервер?');
           }
@@ -457,6 +450,27 @@ if (screen === 'mytests') {
     );
   }
 
+
+    if (screen === 'owner-result' && lastSubmission && activeTest) {
+    return (
+      <TestResultScreen
+        test={activeTest}
+        submission={lastSubmission}
+        onRetry={() => {
+          const fresh = tests.find((t) => t.id === activeTest.id) || activeTest;
+          setActiveTest(fresh);
+          setLastSubmission(null);
+          setAttemptKey((k) => k + 1);
+          setScreen('take');
+        }}
+        onHome={() => {
+          setLastSubmission(null);
+          setActiveTest(null);
+          setScreen('mytests');
+        }}
+      />
+    );
+  }
 
   // ----- РЕЗУЛЬТАТЫ -----
   if (screen === 'results' && activeTest) {
@@ -480,6 +494,138 @@ if (screen === 'mytests') {
   }
 
   return null;
+}
+
+function TestResultScreen({ test, submission, onRetry, onHome }) {
+  const [showReview, setShowReview] = useState(false);
+
+  const isQuiz = test.type === 'quiz';
+
+  const score = submission.score ?? 0;
+  const total = submission.total ?? 0;
+  const answered = submission.answered ?? 0;
+  const skipped = submission.skipped ?? 0;
+  const pct = total ? Math.round((score / total) * 100) : 0;
+
+  const isGreat = isQuiz && pct >= 80;
+  const isOk = isQuiz && pct >= 50 && pct < 80;
+  const isBad = isQuiz && total > 0 && pct < 50;
+
+  const detailed = Array.isArray(submission.detailed) ? submission.detailed : [];
+
+  const servedQuestions = test.questions.filter((q) =>
+    detailed.some((d) => d.qid === q.id)
+  );
+
+  return (
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 pb-40">
+      {/* Шапка */}
+      <div className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 sticky top-0 z-10">
+        <div className="max-w-md mx-auto px-4 py-3 flex items-center justify-between">
+          <span className="font-bold text-gray-800 dark:text-gray-100">Результат</span>
+          <span className="w-12" />
+        </div>
+      </div>
+
+      <div className="max-w-md mx-auto p-4 space-y-4">
+        {/* Сводка */}
+        <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 shadow-sm text-center">
+          {isQuiz ? (
+            <>
+              <div className={`text-5xl font-bold mb-2 ${
+                isGreat ? 'text-emerald-600' : isOk ? 'text-amber-600' : 'text-red-500'
+              }`}>
+                {score}<span className="text-3xl text-gray-400">/{total}</span>
+              </div>
+              <div className="text-sm text-gray-500 dark:text-gray-400 mb-4">
+                {pct}% правильных
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-3">
+                  <div className="text-lg font-bold text-gray-800 dark:text-gray-100">{answered}</div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400">отвечено</div>
+                </div>
+                <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-3">
+                  <div className="text-lg font-bold text-gray-800 dark:text-gray-100">{skipped}</div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400">пропущено</div>
+                </div>
+              </div>
+              <div className="mt-4 text-sm text-gray-500 dark:text-gray-400">
+                {isGreat && '🎉 Отличный результат!'}
+                {isOk && '👍 Хороший результат.'}
+                {isBad && '💪 Попробуйте ещё раз — всё получится.'}
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="bg-emerald-100 rounded-full p-4 w-fit mx-auto mb-3">
+                <Check className="w-8 h-8 text-emerald-600" />
+              </div>
+              <div className="text-lg font-bold text-gray-800 dark:text-gray-100 mb-1">
+                Спасибо!
+              </div>
+              <div className="text-sm text-gray-500 dark:text-gray-400 mb-4">
+                Ваши ответы отправлены.
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-3">
+                  <div className="text-lg font-bold text-gray-800 dark:text-gray-100">{answered}</div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400">отвечено</div>
+                </div>
+                <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-3">
+                  <div className="text-lg font-bold text-gray-800 dark:text-gray-100">{skipped}</div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400">пропущено</div>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Кнопка разбора — только для quiz */}
+        {isQuiz && servedQuestions.length > 0 && (
+          <button
+            onClick={() => setShowReview((v) => !v)}
+            className="w-full bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-800 dark:text-gray-100 rounded-xl py-3 font-medium shadow-sm flex items-center justify-center gap-2"
+          >
+            <ListChecks className="w-4 h-4" />
+            {showReview ? 'Скрыть разбор' : 'Показать разбор ответов'}
+          </button>
+        )}
+
+        {/* Разбор — только для quiz */}
+        {isQuiz && showReview && (
+          <div className="space-y-3">
+            {servedQuestions.map((q, idx) => (
+              <AnswerReview
+                key={q.id}
+                q={q}
+                idx={idx}
+                detail={detailed.find((d) => d.qid === q.id)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Кнопки внизу */}
+      <div className="fixed bottom-0 inset-x-0 bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700 p-3">
+        <div className="max-w-md mx-auto space-y-2">
+          <button
+            onClick={onRetry}
+            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2.5 rounded-lg flex items-center justify-center gap-2"
+          >
+            <Shuffle className="w-4 h-4" /> Пройти ещё раз
+          </button>
+          <button
+            onClick={onHome}
+            className="w-full bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 font-medium py-2.5 rounded-lg"
+          >
+            {localStorage.getItem('username') ? 'В личный кабинет' : 'Создать свой тест'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 /* ============ ВСПОМОГАТЕЛЬНЫЕ КОМПОНЕНТЫ ============ */
