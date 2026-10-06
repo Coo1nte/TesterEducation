@@ -2,4 +2,5 @@
 tests.example.com {
     # Проксируем всё на Nginx внутри Docker-сети
     reverse_proxy frontend:80
+    encode gzip
 }
